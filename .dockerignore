@@ -1,0 +1,39 @@
+# ============================================================================
+# .dockerignore — Proyecto Evaluación Modular (API ML + Docker)
+# Autor: John Gómez
+# Descripción:
+#   Excluye archivos innecesarios del contexto de build de Docker para
+#   reducir tamaño y acelerar la construcción de la imagen.
+# Uso:
+#   Colocar este archivo en la raíz del proyecto (junto a docker/Dockerfile).
+# ============================================================================
+
+# Cachés y entornos
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE/Editor
+.vscode/
+.idea/
+.DS_Store
+
+# Control de versiones
+.git
+.gitignore
+
+# Pruebas, docs y entregables (no necesarios en runtime)
+tests/
+docs/
+*.zip
+
+# Secretos locales
+.env
+
+# IMPORTANTE:
+# No excluir el artefacto del modelo. NO pongas líneas como:
+#   *.pkl
+#   src/model/*.pkl
+
+

@@ -1,0 +1,40 @@
+# ============================================================================
+# .gitignore — Proyecto Evaluación Modular (API ML + Docker)
+# Autor: John Gómez
+# Descripción:
+#   Archivos y carpetas que NO deben versionarse (cachés, entornos, artefactos,
+#   secretos y metadatos de IDE). Mantiene el repo limpio y reproducible.
+# Uso:
+#   Colocar este archivo en la raíz del proyecto.
+# ============================================================================
+
+# --- Python (cachés y metadatos) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.pyo
+
+# --- Entornos virtuales ---
+.venv/
+venv/
+
+# --- Artefactos/entregables y secretos locales ---
+*.zip
+.env
+src/model/*.pkl
+
+# --- Pruebas y cobertura ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Construcción/Distribución local ---
+build/
+dist/
+
+# --- IDE/Editor ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+

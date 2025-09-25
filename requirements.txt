@@ -1,0 +1,28 @@
+# ----------------------------------------------------------------------------
+# requirements.txt — Dependencias para API Flask (Breast Cancer)
+# Autor: John Gómez
+# Descripción:
+#   Librerías necesarias para entrenar el modelo (scikit-learn) y servir
+#   la API (Flask) con Gunicorn. Versiones fijadas para reproducibilidad
+#   y compatibilidad en python:3.11-slim.
+# Uso:
+#   pip install -r requirements.txt
+# ----------------------------------------------------------------------------
+
+# API
+flask==3.0.3
+flask-cors==4.0.1
+gunicorn==21.2.0
+
+# Validación
+pydantic==2.8.2
+
+# ML
+numpy==1.26.4
+scikit-learn==1.4.2
+joblib==1.4.2
+
+# Utilidades (opcionales pero útiles)
+requests==2.32.3
+prometheus-client==0.20.0
+

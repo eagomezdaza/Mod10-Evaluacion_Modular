@@ -38,3 +38,5 @@ dist/
 *.swp
 .DS_Store
 
+em-api_*.tar
+em-api_*.tar

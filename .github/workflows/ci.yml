@@ -6,6 +6,7 @@
 #   CI mínimo y estable:
 #   - Instala dependencias
 #   - Entrena modelo y verifica que exista
+#   - Exporta MODEL_PATH
 #   - Levanta API (Gunicorn) con espera por /health
 #   - Ejecuta tests contra la API
 #   - Muestra logs y detiene la API
@@ -32,6 +33,7 @@ jobs:
     env:
       PORT: 5000
       PYTHONPATH: ${{ github.workspace }}
+      MODEL_PATH: src/model/modelo_breast.pkl
 
     steps:
       - name: Checkout repo
@@ -60,16 +62,18 @@ jobs:
         run: |
           python src/train_breast_cancer.py
 
-      - name: Ensure model exists
+      - name: Ensure model exists and import app
         run: |
           ls -lah src/model || true
-          test -f src/model/modelo_breast.pkl || (echo "Falta modelo; re-entrenando..." && python src/train_breast_cancer.py)
+          test -f "$MODEL_PATH" || (echo "Falta modelo; re-entrenando..." && python src/train_breast_cancer.py)
           python - <<'PY'
-import os, sys
-p="src/model/modelo_breast.pkl"
-print("MODEL EXISTS:", os.path.exists(p), "SIZE:", os.path.getsize(p) if os.path.exists(p) else -1)
+import os,sys
+p=os.environ.get("MODEL_PATH","src/model/modelo_breast.pkl")
+print("MODEL_PATH:", p)
+import pathlib
+print("MODEL EXISTS:", pathlib.Path(p).exists(), "SIZE:", pathlib.Path(p).stat().st_size if pathlib.Path(p).exists() else -1)
 try:
-    import src.app  # prueba de import
+    import src.app
     print("import src.app OK")
 except Exception as e:
     print("import src.app FAILED:", e)
@@ -80,6 +84,7 @@ PY
         run: |
           set -e
           echo "PYTHONPATH=$PYTHONPATH"
+          echo "MODEL_PATH=$MODEL_PATH"
           python -m gunicorn -w 2 -b 127.0.0.1:${PORT} src.app:app > api.log 2>&1 &
           echo $! > app.pid
           for i in $(seq 1 60); do
@@ -87,7 +92,7 @@ PY
               echo "API healthy en intento $i"
               exit 0
             fi
-            if [ $((i % 5)) -eq 0 ]; then echo "--- api.log (tail) ---"; tail -n 20 api.log || true; fi
+            if [ $((i % 5)) -eq 0 ]; then echo "--- api.log (tail) ---"; tail -n 30 api.log || true; fi
             sleep 2
           done
           echo "La API no alcanzó estado healthy."

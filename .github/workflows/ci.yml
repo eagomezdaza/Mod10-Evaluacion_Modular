@@ -6,7 +6,7 @@
 #   Workflow que instala dependencias, entrena el modelo,
 #   levanta la API (Gunicorn) y corre los tests básicos contra la API.
 #   Incluye espera activa por /health y logging para diagnóstico,
-#   y un job opcional de despliegue a Azure Container Apps.
+#   y un job de despliegue a Azure Container Apps SIN condiciones con secrets.
 # ============================================================================
 
 name: Evaluacion Modular CI
@@ -20,7 +20,7 @@ on:
       - "docker/**"
       - "Makefile"
       - "requirements.txt"
-      - "ci/github-actions.yml"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [ "main" ]
 
@@ -76,7 +76,7 @@ jobs:
       - name: Run tests
         run: |
           set -e
-          if [ -f "pytest.ini" ] || [ -d "tests" ] && ls tests/test_*.py >/dev/null 2>&1; then
+          if [ -f "pytest.ini" ] || ( [ -d "tests" ] && ls tests/test_*.py >/dev/null 2>&1 ); then
             pytest -q
           else
             python tests/test_predict.py --base-url "http://127.0.0.1:${PORT}"
@@ -96,16 +96,6 @@ jobs:
             sleep 1
           fi
 
-  # ============================================================================
-  # Job: Deploy — Azure Container Apps
-  # Requiere secretos:
-  #   - AZURE_CREDENTIALS: JSON del Service Principal (clientId, clientSecret, subscriptionId, tenantId)
-  #   - ACR_NAME: nombre del ACR (ej: acrevalmod1234)
-  #   - ACR_LOGIN_SERVER: login server (ej: acrevalmod1234.azurecr.io)
-  #   - (Opcional) AZURE_ACR_PASSWORD: para docker/login-action
-  # Variables opcionales:
-  #   - RG, LOCATION, ENV_NAME, APP, IMAGE, PORT, MODEL_PATH
-  # ============================================================================
   deploy-azure:
     name: Deploy — Azure Container Apps
     needs: [ build-and-test ]
@@ -134,26 +124,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to ACR (password-based)
-        if: ${{ secrets.AZURE_ACR_PASSWORD != '' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_NAME }}
-          password: ${{ secrets.AZURE_ACR_PASSWORD }}
-
-      - name: Build & Push (docker/login-action)
-        if: ${{ secrets.AZURE_ACR_PASSWORD != '' }}
-        run: |
-          docker build -f docker/Dockerfile -t "${{ secrets.ACR_LOGIN_SERVER }}/${IMAGE}:${TAG}" .
-          docker push "${{ secrets.ACR_LOGIN_SERVER }}/${IMAGE}:${TAG}"
-
-      - name: Build & Push (az acr login)
-        if: ${{ secrets.AZURE_ACR_PASSWORD == '' }}
+      - name: Build & Push to ACR (via az acr login)
         run: |
           az acr login -n "${{ secrets.ACR_NAME }}"
-          docker build -f docker/Dockerfile -t "${{ secrets.ACR_LOGIN_SERVER }}/${IMAGE}:${TAG}" .
-          docker push "${{ secrets.ACR_LOGIN_SERVER }}/${IMAGE}:${TAG}"
+          docker build -f docker/Dockerfile -t "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}" .
+          docker push "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}"
 
       - name: Deploy to Azure Container Apps (script)
         env:

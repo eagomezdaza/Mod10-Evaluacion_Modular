@@ -1,1 +1,159 @@
-[PEGAR AQUÍ EL CONTENIDO COMPLETO CORREGIDO DE ARRIBA]
+name: Evaluacion Modular CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "docker/**"
+      - "Makefile"
+      - "requirements.txt"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      PORT: 5000
+      MODEL_PATH: src/model/modelo_breast.pkl
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Train model
+        run: |
+          python src/train_breast_cancer.py
+
+      - name: Start API (Gunicorn, factory, background)
+        env:
+          PORT: ${{ env.PORT }}
+          MODEL_PATH: ${{ env.MODEL_PATH }}
+        run: |
+          gunicorn 'src.app:create_app()' -w 2 -b 127.0.0.1:${PORT} > api.log 2>&1 &
+          echo $! > app.pid
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+              echo "API healthy en intento $i"
+              break
+            fi
+            echo "Esperando API... (intento $i)"
+            sleep 2
+            if [ "$i" -eq 30 ]; then
+              echo "La API no alcanzó estado healthy a tiempo."
+              echo "=== api.log (últimas 200 líneas) ==="
+              tail -n 200 api.log || true
+              exit 1
+            fi
+          done
+
+      - name: Smoke tests
+        run: |
+          set -e
+          curl -f "http://127.0.0.1:${PORT}/health"
+          cat > sample_test.json << 'EOF'
+          {
+            "features": [17.99, 10.38, 122.8, 1001.0, 0.1184, 0.2776, 0.3001, 0.1471, 0.2419, 0.07871,
+                         1.095, 0.9053, 8.589, 153.4, 0.006399, 0.04904, 0.05373, 0.01587, 0.03003, 0.006193,
+                         25.38, 17.33, 184.6, 2019.0, 0.1622, 0.6656, 0.7119, 0.2654, 0.4601, 0.1189]
+          }
+          EOF
+          curl -f -X POST "http://127.0.0.1:${PORT}/predict" \
+               -H "Content-Type: application/json" \
+               --data @sample_test.json
+
+      - name: Mostrar logs de la API
+        if: always()
+        run: |
+          echo "=== api.log (últimas 150 líneas) ==="
+          tail -n 150 api.log || true
+
+      - name: Detener API
+        if: always()
+        run: |
+          [ -f app.pid ] && kill "$(cat app.pid)" 2>/dev/null || true
+
+  deploy-azure:
+    name: Deploy — Azure Container Apps
+    needs: [ build-and-test ]
+    if: github.ref == 'refs/heads/main' && secrets.AZURE_CREDENTIALS != '' && secrets.ACR_NAME != '' && secrets.ACR_LOGIN_SERVER != ''
+    runs-on: ubuntu-latest
+    env:
+      RG: rg-evalmod
+      LOCATION: eastus
+      ENV_NAME: env-evalmod
+      APP: evalmod-api
+      IMAGE: em-api
+      PORT: 5000
+      TAG: ${{ github.sha }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure login (Service Principal)
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Install Container Apps CLI
+        run: |
+          az extension add --name containerapp --upgrade
+          az provider register --namespace Microsoft.App
+          az provider register --namespace Microsoft.OperationalInsights
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push to ACR
+        run: |
+          az acr login -n "${{ secrets.ACR_NAME }}"
+          docker build -f docker/Dockerfile -t "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}" .
+          docker push "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}"
+
+      - name: Create/Update Container App
+        env:
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          IMAGE_URI="${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}"
+          EXTRA_REG="--registry-server ${ACR_LOGIN_SERVER} --registry-username ${ACR_USERNAME} --registry-password ${ACR_PASSWORD}"
+
+          if ! az containerapp env show -g "$RG" -n "$ENV_NAME" >/dev/null 2>&1; then
+            az containerapp env create -g "$RG" -n "$ENV_NAME" -l "$LOCATION"
+          fi
+
+          if az containerapp show -g "$RG" -n "$APP" >/dev/null 2>&1; then
+            az containerapp update -g "$RG" -n "$APP" \
+              --image "$IMAGE_URI" --target-port "$PORT" --ingress external $EXTRA_REG
+          else
+            az containerapp create -g "$RG" -n "$APP" --environment "$ENV_NAME" \
+              --image "$IMAGE_URI" --target-port "$PORT" --ingress external \
+              --min-replicas 1 --max-replicas 3 $EXTRA_REG
+          fi
+
+      - name: Mostrar URL pública
+        run: |
+          FQDN=$(az containerapp show -g "${{ env.RG }}" -n "${{ env.APP }}" --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "no-disponible")
+          echo "URL pública: https://${FQDN}"

@@ -105,33 +105,42 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      RG: rg-evalmod-aca2
-      LOCATION: eastus
+      # === Environment EXISTENTE (lo listaste con az containerapp env list) ===
+      RG_ENV: rg-evalmod-aca2
       ENV_NAME: env-evalmod2
+      LOCATION: eastus
+
+      # === RG donde quieres/está la APP (puede ser distinto al del ENV) ===
+      RG_APP: rg-evalmod
       APP: evalmod-api
+
+      # Imagen y app config
       IMAGE: em-api
-      PORT: 5000
       TAG: ${{ github.sha }}
+      PORT: 5000
+      MODEL_PATH: src/model/modelo_breast.pkl
+
+      # Registry desde Secrets
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+
+      # El build&push ya lo hace este job (dejamos el script en modo SKIP_BUILD=1)
+      SKIP_BUILD: "1"
+
     steps:
       - name: Preflight secrets
         env:
           HAS_AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-          HAS_ACR_NAME: ${{ secrets.ACR_NAME }}
           HAS_ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
           HAS_ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           HAS_ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
           missing=0
-          for v in HAS_AZURE_CREDENTIALS HAS_ACR_NAME HAS_ACR_LOGIN_SERVER HAS_ACR_USERNAME HAS_ACR_PASSWORD; do
-            if [ -z "${!v}" ]; then
-              echo "❌ Falta secret: $v"
-              missing=1
-            fi
+          for v in HAS_AZURE_CREDENTIALS HAS_ACR_LOGIN_SERVER HAS_ACR_USERNAME HAS_ACR_PASSWORD; do
+            if [ -z "${!v}" ]; then echo "❌ Falta secret: $v"; missing=1; fi
           done
-          if [ "$missing" -eq 1 ]; then
-            echo "Aborto: faltan secrets requeridos."
-            exit 1
-          fi
+          [ "$missing" -eq 1 ] && { echo "Aborto: faltan secrets."; exit 1; }
           echo "✅ Secrets presentes"
 
       - name: Checkout repo
@@ -146,11 +155,10 @@ jobs:
         run: |
           az extension add --name containerapp --upgrade
           for NS in Microsoft.App Microsoft.OperationalInsights; do
-            STATE=$(az provider show --namespace $NS --query "registrationState" -o tsv || echo "Unknown")
-            echo "$NS provider state: $STATE"
+            STATE=$(az provider show --namespace $NS --query registrationState -o tsv || echo "Unknown")
+            echo "$NS: $STATE"
             if [ "$STATE" != "Registered" ]; then
-              echo "❌ Provider $NS no está 'Registered' en la suscripción."
-              echo "   Regístralo 1 vez fuera del pipeline:"
+              echo "❌ Provider $NS no está 'Registered'. Regístralo 1 vez con tu usuario:"
               echo "   az provider register --namespace $NS"
               exit 1
             fi
@@ -161,34 +169,15 @@ jobs:
 
       - name: Build & Push to ACR
         run: |
-          az acr login -n "${{ secrets.ACR_NAME }}"
-          docker build -f docker/Dockerfile -t "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}" .
-          docker push "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}"
+          az acr login -n "${{ env.ACR_LOGIN_SERVER%%.* }}"
+          docker build -f docker/Dockerfile -t "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}" .
+          docker push "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}"
 
-      - name: Create/Update Container App
-        env:
-          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          IMAGE_URI="${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}"
-          EXTRA_REG="--registry-server ${ACR_LOGIN_SERVER} --registry-username ${ACR_USERNAME} --registry-password ${ACR_PASSWORD}"
-
-          if ! az containerapp env show -g "$RG" -n "$ENV_NAME" >/dev/null 2>&1; then
-            az containerapp env create -g "$RG" -n "$ENV_NAME" -l "$LOCATION"
-          fi
-
-          if az containerapp show -g "$RG" -n "$APP" >/dev/null 2>&1; then
-            az containerapp update -g "$RG" -n "$APP" \
-              --image "$IMAGE_URI" --target-port "$PORT" --ingress external $EXTRA_REG
-          else
-            az containerapp create -g "$RG" -n "$APP" --environment "$ENV_NAME" \
-              --image "$IMAGE_URI" --target-port "$PORT" --ingress external \
-              --min-replicas 1 --max-replicas 3 $EXTRA_REG
-          fi
+      - name: Deploy to Azure Container Apps (script)
+        run: bash scripts/deploy_azure.sh
 
       - name: Mostrar URL pública
         run: |
-          FQDN=$(az containerapp show -g "${{ env.RG }}" -n "${{ env.APP }}" --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "no-disponible")
+          FQDN=$(az containerapp show -g "${{ env.RG_APP }}" -n "${{ env.APP }}" --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "no-disponible")
           echo "🌐 URL pública: https://${FQDN}"
 

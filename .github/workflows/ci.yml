@@ -3,13 +3,10 @@
 # Autor: John Gómez
 # Fecha: 2025-09-25
 # Descripción:
-#   CI mínimo y estable:
-#   - Instala dependencias
-#   - Entrena modelo y verifica que exista
-#   - Exporta MODEL_PATH
-#   - Levanta API (Gunicorn) con espera por /health
-#   - Ejecuta tests contra la API
-#   - Muestra logs y detiene la API
+#   Workflow que instala dependencias, entrena el modelo,
+#   levanta la API (Gunicorn) y corre los tests básicos contra la API.
+#   Incluye espera activa por /health y logging para diagnóstico,
+#   y un job de despliegue a Azure Container Apps SIN condiciones con secrets.
 # ============================================================================
 
 name: Evaluacion Modular CI
@@ -32,8 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PORT: 5000
-      PYTHONPATH: ${{ github.workspace }}
-      MODEL_PATH: src/model/modelo_breast.pkl
 
     steps:
       - name: Checkout repo
@@ -56,53 +51,36 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -V
 
       - name: Train model
         run: |
           python src/train_breast_cancer.py
 
-      - name: Ensure model exists and import app
+      - name: Start API (Gunicorn, background)
         run: |
-          ls -lah src/model || true
-          test -f "$MODEL_PATH" || (echo "Falta modelo; re-entrenando..." && python src/train_breast_cancer.py)
-          python - <<'PY'
-import os,sys
-p=os.environ.get("MODEL_PATH","src/model/modelo_breast.pkl")
-print("MODEL_PATH:", p)
-import pathlib
-print("MODEL EXISTS:", pathlib.Path(p).exists(), "SIZE:", pathlib.Path(p).stat().st_size if pathlib.Path(p).exists() else -1)
-try:
-    import src.app
-    print("import src.app OK")
-except Exception as e:
-    print("import src.app FAILED:", e)
-    sys.exit(1)
-PY
-
-      - name: Start API (Gunicorn, background) and wait /health
-        run: |
-          set -e
-          echo "PYTHONPATH=$PYTHONPATH"
-          echo "MODEL_PATH=$MODEL_PATH"
-          python -m gunicorn -w 2 -b 127.0.0.1:${PORT} src.app:app > api.log 2>&1 &
+          python -m gunicorn -w 2 -b 0.0.0.0:${PORT} src.app:app > api.log 2>&1 &
           echo $! > app.pid
-          for i in $(seq 1 60); do
+          for i in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
               echo "API healthy en intento $i"
               exit 0
             fi
-            if [ $((i % 5)) -eq 0 ]; then echo "--- api.log (tail) ---"; tail -n 30 api.log || true; fi
+            echo "Esperando API... (intento $i)"
             sleep 2
           done
-          echo "La API no alcanzó estado healthy."
-          echo "=== api.log (últimas 200 líneas) ==="; tail -n 200 api.log || true
+          echo "La API no alcanzó estado healthy a tiempo."
+          echo "=== api.log (últimas 200 líneas) ==="
+          tail -n 200 api.log || true
           exit 1
 
-      - name: Run tests (test_predict.py contra la URL)
+      - name: Run tests
         run: |
           set -e
-          python tests/test_predict.py --base-url "http://127.0.0.1:${PORT}"
+          if [ -f "pytest.ini" ] || ( [ -d "tests" ] && ls tests/test_*.py >/dev/null 2>&1 ); then
+            pytest -q
+          else
+            python tests/test_predict.py --base-url "http://127.0.0.1:${PORT}"
+          fi
 
       - name: Mostrar logs de la API
         if: always()
@@ -117,3 +95,58 @@ PY
             kill "$(cat app.pid)" || true
             sleep 1
           fi
+
+  deploy-azure:
+    name: Deploy — Azure Container Apps
+    needs: [ build-and-test ]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    env:
+      RG: rg-evalmod-aca
+      LOCATION: eastus
+      ENV_NAME: env-evalmod
+      APP: evalmod-api
+      IMAGE: em-api
+      PORT: 5002
+      MODEL_PATH: src/model/modelo_breast.pkl
+      TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure login (Service Principal)
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push to ACR (via az acr login)
+        run: |
+          az acr login -n "${{ secrets.ACR_NAME }}"
+          docker build -f docker/Dockerfile -t "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}" .
+          docker push "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}"
+
+      - name: Deploy to Azure Container Apps (script)
+        env:
+          LOCATION: ${{ env.LOCATION }}
+          RG: ${{ env.RG }}
+          ACR: ${{ secrets.ACR_NAME }}
+          IMAGE: ${{ env.IMAGE }}
+          TAG: ${{ env.TAG }}
+          APP: ${{ env.APP }}
+          ENV_NAME: ${{ env.ENV_NAME }}
+          PORT: ${{ env.PORT }}
+          MODEL_PATH: ${{ env.MODEL_PATH }}
+          SKIP_BUILD: "1"
+          DOCKERFILE: docker/Dockerfile
+        run: |
+          bash scripts/deploy_azure.sh
+
+      - name: Mostrar URL pública
+        run: |
+          FQDN="$(az containerapp show -g '${{ env.RG }}' -n '${{ env.APP }}' --query properties.configuration.ingress.fqdn -o tsv || true)"
+          echo "URL pública: https://${FQDN}"

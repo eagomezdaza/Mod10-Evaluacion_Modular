@@ -1,0 +1,14 @@
+name: Self Test
+
+on:
+  workflow_dispatch:   # permite ejecutarlo manualmente
+  push:
+    branches: ['**']   # dispara en cualquier rama
+    paths:
+      - ".github/workflows/_selftest.yml"
+
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "✅ GitHub Actions está funcionando en $GITHUB_REF"

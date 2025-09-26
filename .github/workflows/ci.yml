@@ -105,9 +105,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      RG: rg-evalmod
+      RG: rg-evalmod-aca2
       LOCATION: eastus
-      ENV_NAME: env-evalmod
+      ENV_NAME: env-evalmod2
       APP: evalmod-api
       IMAGE: em-api
       PORT: 5000

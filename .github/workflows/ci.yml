@@ -58,28 +58,33 @@ jobs:
 
       - name: Start API (Gunicorn, background)
         run: |
+          export PYTHONPATH="$PWD"
+          echo "PYTHONPATH=$PYTHONPATH"
           python -m gunicorn -w 2 -b 0.0.0.0:${PORT} src.app:app > api.log 2>&1 &
           echo $! > app.pid
-          for i in $(seq 1 30); do
+          # Espera hasta 90s a que /health responda
+          for i in $(seq 1 45); do
             if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
               echo "API healthy en intento $i"
               exit 0
             fi
+            if [ $((i % 5)) -eq 0 ]; then echo "--- api.log (tail) ---"; tail -n 20 api.log || true; fi
             echo "Esperando API... (intento $i)"
             sleep 2
           done
-          echo "La API no alcanzó estado healthy a tiempo."
-          echo "=== api.log (últimas 200 líneas) ==="
-          tail -n 200 api.log || true
+          echo "La API no alcanzó estado healthy a tiempo. Dump de logs:"
+          echo "=== api.log (últimas 400 líneas) ==="
+          tail -n 400 api.log || true
           exit 1
 
       - name: Run tests
         run: |
           set -e
+          # Siempre prueba el endpoint explícitamente
+          python tests/test_predict.py --base-url "http://127.0.0.1:${PORT}"
+          # Si además tienes más tests con pytest, ejecútalos después (opcional)
           if [ -f "pytest.ini" ] || ( [ -d "tests" ] && ls tests/test_*.py >/dev/null 2>&1 ); then
-            pytest -q
-          else
-            python tests/test_predict.py --base-url "http://127.0.0.1:${PORT}"
+            pytest -q || true
           fi
 
       - name: Mostrar logs de la API

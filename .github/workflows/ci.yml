@@ -3,10 +3,12 @@
 # Autor: John Gómez
 # Fecha: 2025-09-25
 # Descripción:
-#   CI que instala deps, entrena modelo, levanta API y corre tests.
-#   Incluye verificación del modelo, espera extendida con tail de logs,
-#   y fallback a "python src/app.py" si gunicorn falla.
-#   Luego publica y despliega a Azure (si hay secrets configurados).
+#   CI mínimo y estable:
+#   - Instala dependencias
+#   - Entrena modelo y verifica que exista
+#   - Levanta API (Gunicorn) con espera por /health
+#   - Ejecuta tests contra la API
+#   - Muestra logs y detiene la API
 # ============================================================================
 
 name: Evaluacion Modular CI
@@ -53,71 +55,49 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -V
-          pip list | sed -n '1,120p'
 
       - name: Train model
         run: |
           python src/train_breast_cancer.py
 
-      - name: Ensure model exists & show tree
+      - name: Ensure model exists
         run: |
           ls -lah src/model || true
-          test -f src/model/modelo_breast.pkl || (echo "FALTA modelo_breast.pkl; re-entrenando..." && python src/train_breast_cancer.py)
+          test -f src/model/modelo_breast.pkl || (echo "Falta modelo; re-entrenando..." && python src/train_breast_cancer.py)
           python - <<'PY'
-import os,sys,glob
-p='src/model/modelo_breast.pkl'
+import os, sys
+p="src/model/modelo_breast.pkl"
 print("MODEL EXISTS:", os.path.exists(p), "SIZE:", os.path.getsize(p) if os.path.exists(p) else -1)
-print("PWD:", os.getcwd())
-print("PYTHONPATH:", os.environ.get("PYTHONPATH"))
-print("App import test:")
 try:
-    import src.app as a
+    import src.app  # prueba de import
     print("import src.app OK")
 except Exception as e:
-    print("import src.app FAILED:", e); sys.exit(1)
+    print("import src.app FAILED:", e)
+    sys.exit(1)
 PY
 
-      - name: Start API (Gunicorn, background) + wait
+      - name: Start API (Gunicorn, background) and wait /health
         run: |
           set -e
-          echo "Arrancando gunicorn..."
+          echo "PYTHONPATH=$PYTHONPATH"
           python -m gunicorn -w 2 -b 127.0.0.1:${PORT} src.app:app > api.log 2>&1 &
           echo $! > app.pid
           for i in $(seq 1 60); do
             if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-              echo "API healthy en intento $i (gunicorn)"
+              echo "API healthy en intento $i"
               exit 0
             fi
             if [ $((i % 5)) -eq 0 ]; then echo "--- api.log (tail) ---"; tail -n 20 api.log || true; fi
             sleep 2
           done
-          echo "Gunicorn no respondió a tiempo."
+          echo "La API no alcanzó estado healthy."
           echo "=== api.log (últimas 200 líneas) ==="; tail -n 200 api.log || true
-          echo "Intentando fallback con 'python src/app.py'..."
-          # fallback: python directo
-          python src/app.py > api.log 2>&1 &
-          echo $! > app.pid
-          for i in $(seq 1 60); do
-            if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-              echo "API healthy en intento $i (python src/app.py)"
-              exit 0
-            fi
-            if [ $((i % 5)) -eq 0 ]; then echo "--- api.log (tail) ---"; tail -n 20 api.log || true; fi
-            sleep 2
-          done
-          echo "La API no alcanzó estado healthy con ninguno de los métodos."
-          echo "=== api.log (últimas 400 líneas) ==="; tail -n 400 api.log || true
           exit 1
 
       - name: Run tests (test_predict.py contra la URL)
         run: |
           set -e
           python tests/test_predict.py --base-url "http://127.0.0.1:${PORT}"
-          # Si hay más tests con pytest, ejecútalos (no rompas el pipeline si fallan estos opcionales)
-          if [ -d "tests" ] && ls tests/test_*.py >/dev/null 2>&1; then
-            echo "Ejecutando pytest adicional (no bloqueante)..."
-            pytest -q || true
-          fi
 
       - name: Mostrar logs de la API
         if: always()
@@ -132,58 +112,3 @@ PY
             kill "$(cat app.pid)" || true
             sleep 1
           fi
-
-  deploy-azure:
-    name: Deploy — Azure Container Apps
-    needs: [ build-and-test ]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-
-    env:
-      RG: rg-evalmod-aca
-      LOCATION: eastus
-      ENV_NAME: env-evalmod
-      APP: evalmod-api
-      IMAGE: em-api
-      PORT: 5002
-      MODEL_PATH: src/model/modelo_breast.pkl
-      TAG: ${{ github.sha }}
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Azure login (Service Principal)
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build & Push to ACR (via az acr login)
-        run: |
-          az acr login -n "${{ secrets.ACR_NAME }}"
-          docker build -f docker/Dockerfile -t "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}" .
-          docker push "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE }}:${{ env.TAG }}"
-
-      - name: Deploy to Azure Container Apps (script)
-        env:
-          LOCATION: ${{ env.LOCATION }}
-          RG: ${{ env.RG }}
-          ACR: ${{ secrets.ACR_NAME }}
-          IMAGE: ${{ env.IMAGE }}
-          TAG: ${{ env.TAG }}
-          APP: ${{ env.APP }}
-          ENV_NAME: ${{ env.ENV_NAME }}
-          PORT: ${{ env.PORT }}
-          MODEL_PATH: ${{ env.MODEL_PATH }}
-          SKIP_BUILD: "1"
-          DOCKERFILE: docker/Dockerfile
-        run: |
-          bash scripts/deploy_azure.sh
-
-      - name: Mostrar URL pública
-        run: |
-          FQDN="$(az containerapp show -g '${{ env.RG }}' -n '${{ env.APP }}' --query properties.configuration.ingress.fqdn -o tsv || true)"
-          echo "URL pública: https://${FQDN}"

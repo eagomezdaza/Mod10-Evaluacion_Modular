@@ -1,4 +1,4 @@
-# ============================================================================
+---
 # README.md — Proyecto Evaluación Modular (API ML Breast Cancer)
 # Autor: John Gómez
 # Fecha: 2025-09-25
@@ -6,7 +6,7 @@
 #   API REST en Flask que expone un modelo de clasificación de cáncer de mama
 #   (dataset Breast Cancer Wisconsin). Incluye entrenamiento, pruebas,
 #   contenedor Docker y despliegue en Azure Container Apps.
-# ============================================================================
+---
 
 ## 🚀 Introducción
 Este proyecto implementa una **API de Machine Learning** para predecir cáncer de mama utilizando el dataset **Breast Cancer Wisconsin**.  

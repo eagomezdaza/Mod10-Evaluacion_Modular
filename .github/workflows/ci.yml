@@ -97,7 +97,7 @@ jobs:
   deploy-azure:
     name: Deploy — Azure Container Apps
     needs: [ build-and-test ]
-    if: github.ref == 'refs/heads/main' && secrets.AZURE_CREDENTIALS != '' && secrets.ACR_NAME != '' && secrets.ACR_LOGIN_SERVER != ''
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       RG: rg-evalmod
@@ -108,6 +108,27 @@ jobs:
       PORT: 5000
       TAG: ${{ github.sha }}
     steps:
+      - name: Preflight secrets
+        env:
+          HAS_AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          HAS_ACR_NAME: ${{ secrets.ACR_NAME }}
+          HAS_ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+          HAS_ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          HAS_ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          missing=0
+          for v in HAS_AZURE_CREDENTIALS HAS_ACR_NAME HAS_ACR_LOGIN_SERVER HAS_ACR_USERNAME HAS_ACR_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "❌ Falta secret: $v"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "Aborto: faltan secrets requeridos."
+            exit 1
+          fi
+          echo "✅ Secrets presentes"
+
       - name: Checkout repo
         uses: actions/checkout@v4
 

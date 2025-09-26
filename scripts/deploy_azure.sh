@@ -120,3 +120,4 @@ curl -s -X POST "https://$FQDN/predict" \
      -d '{"features":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}' || true; echo
 
 echo "Listo."
+

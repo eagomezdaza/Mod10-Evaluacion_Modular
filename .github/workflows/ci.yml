@@ -51,14 +51,11 @@ jobs:
           python src/train_breast_cancer.py
 
       - name: Start API (Gunicorn, factory, background)
-        env:
-          PORT: ${{ env.PORT }}
-          MODEL_PATH: ${{ env.MODEL_PATH }}
         run: |
-          gunicorn 'src.app:create_app()' -w 2 -b 127.0.0.1:${PORT} > api.log 2>&1 &
+          gunicorn 'src.app:create_app()' -w 2 -b 127.0.0.1:${{ env.PORT }} > api.log 2>&1 &
           echo $! > app.pid
           for i in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+            if curl -fsS "http://127.0.0.1:${{ env.PORT }}/health" >/dev/null 2>&1; then
               echo "✅ API healthy en intento $i"
               break
             fi
@@ -97,6 +94,9 @@ jobs:
         if: always()
         run: |
           [ -f app.pid ] && kill "$(cat app.pid)" 2>/dev/null || true
+          sleep 2
+          # Asegurar que el proceso se cerró
+          [ -f app.pid ] && (kill -0 "$(cat app.pid)" 2>/dev/null && kill -9 "$(cat app.pid)" || true) || true
 
   deploy-azure:
     name: Deploy — Azure Container Apps
@@ -104,84 +104,67 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      # === Environment EXISTENTE ===
       RG_ENV: rg-evalmod-aca2
       ENV_NAME: env-evalmod2
       LOCATION: eastus
-
-      # === RG de la APP (puede ser distinto al del ENV) ===
       RG_APP: rg-evalmod
       APP: evalmod-api
-
-      # Imagen y app config
       IMAGE: em-api
       TAG: ${{ github.sha }}
       PORT: 5000
       MODEL_PATH: src/model/modelo_breast.pkl
-
-      # Registry desde Secrets (obligatorios)
       ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
 
-      # El build&push lo hace este mismo job; el script se ejecuta con SKIP_BUILD=1
-      SKIP_BUILD: "1"
-
     steps:
       - name: Preflight secrets
-        env:
-          HAS_AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-          HAS_ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-          HAS_ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          HAS_ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
           missing=0
-          for v in HAS_AZURE_CREDENTIALS HAS_ACR_LOGIN_SERVER HAS_ACR_USERNAME HAS_ACR_PASSWORD; do
-            if [ -z "${!v}" ]; then echo "❌ Falta secret: $v"; missing=1; fi
+          for secret in AZURE_CREDENTIALS ACR_LOGIN_SERVER ACR_USERNAME ACR_PASSWORD; do
+            if [ -z "${!secret:-}" ]; then 
+              echo "❌ Falta secret: $secret"
+              missing=1
+            fi
           done
-          [ "$missing" -eq 1 ] && { echo "Aborto: faltan secrets."; exit 1; }
-          echo "✅ Secrets presentes"
+          [ "$missing" -eq 1 ] && exit 1
+          echo "✅ Todos los secrets están presentes"
 
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Azure login (Service Principal)
+      - name: Azure login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Install Container Apps CLI & check providers (no register)
+      - name: Install Container Apps CLI
         run: |
           az extension add --name containerapp --upgrade
-          for NS in Microsoft.App Microsoft.OperationalInsights; do
-            STATE=$(az provider show --namespace $NS --query registrationState -o tsv || echo "Unknown")
-            echo "$NS: $STATE"
-            if [ "$STATE" != "Registered" ]; then
-              echo "❌ Provider $NS no está 'Registered'. Regístralo 1 vez con tu usuario:"
-              echo "   az provider register --namespace $NS"
-              exit 1
-            fi
-          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build & Push to ACR
         run: |
-          # Deriva el nombre del ACR a partir del login server (foo.azurecr.io -> foo)
           ACR_NAME="${ACR_LOGIN_SERVER%%.*}"
+          echo "$ACR_PASSWORD" | docker login "$ACR_LOGIN_SERVER" -u "$ACR_USERNAME" --password-stdin
+          docker build -f docker/Dockerfile -t "$ACR_LOGIN_SERVER/$IMAGE:$TAG" .
+          docker push "$ACR_LOGIN_SERVER/$IMAGE:$TAG"
 
-          az acr login -n "$ACR_NAME"
+      - name: Verificar script de deploy
+        run: |
+          ls -la scripts/
+          bash -n scripts/deploy_azure.sh && echo "✅ Sintaxis del script OK"
 
-          docker build -f docker/Dockerfile -t "${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}" .
-          docker push "${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}"
-
-      - name: Deploy to Azure Container Apps (script)
+      - name: Deploy to Azure Container Apps
         run: bash scripts/deploy_azure.sh
+        env:
+          SKIP_BUILD: "1"  # Porque ya hicimos build en el paso anterior
 
       - name: Mostrar URL pública
         run: |
-          FQDN=$(az containerapp show -g "${{ env.RG_APP }}" -n "${{ env.APP }}" --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "no-disponible")
-          echo "🌐 URL pública: https://${FQDN}"
+          FQDN=$(az containerapp show -g "$RG_APP" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "🌐 URL pública: https://$FQDN"
 
 

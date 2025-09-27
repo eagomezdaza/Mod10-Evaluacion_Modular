@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
----
+# ============================================================================
 # deploy_azure.sh — Despliegue a Azure Container Apps (ACA) con ACR (cross-RG)
 # Autor: John Gómez (ajustes por chat)
 # Descripción:
@@ -23,7 +23,7 @@
 #   ACR          (opcional, si no pasas LOGIN_SERVER; ej: acrevalmod16233)
 #   SKIP_BUILD   = 1 para omitir build/push (si lo hace el job anterior)
 #   DOCKERFILE   = docker/Dockerfile
----
+# ============================================================================
 
 set -euo pipefail
 
@@ -104,20 +104,10 @@ if [[ -z "${ENV_ID:-}" ]]; then
 fi
 echo "ENV_ID: $ENV_ID"
 
-# -------- Credenciales del registry --------
+# -------- Preparar args de registry SOLO para CREATE --------
 REG_ARGS=""
 if [[ -n "${ACR_USERNAME:-}" && -n "${ACR_PASSWORD:-}" ]]; then
   REG_ARGS="--registry-server $ACR_LOGIN --registry-username $ACR_USERNAME --registry-password $ACR_PASSWORD"
-else
-  echo "ℹ️ No llegaron ACR_USERNAME/ACR_PASSWORD; intentando obtener del ACR..."
-  ACR_USER="$(az acr credential show -n "${ACR:-$ACR_NAME_FROM_LOGIN}" --query username -o tsv || true)"
-  ACR_PASS="$(az acr credential show -n "${ACR:-$ACR_NAME_FROM_LOGIN}" --query passwords[0].value -o tsv || true)"
-  if [[ -n "$ACR_USER" && -n "$ACR_PASS" ]]; then
-    REG_ARGS="--registry-server $ACR_LOGIN --registry-username $ACR_USER --registry-password $ACR_PASS"
-  else
-    echo "❌ No se pudieron obtener credenciales del ACR. Pasa ACR_USERNAME y ACR_PASSWORD en el entorno."
-    exit 1
-  fi
 fi
 
 # -------- Crear / Actualizar la Container App --------
@@ -126,11 +116,18 @@ echo "=== Despliegue de imagen: $IMAGE_URI ==="
 
 if az containerapp show -g "$RG_APP" -n "$APP" >/dev/null 2>&1; then
   echo "🔁 Actualizando app existente: $APP (RG: $RG_APP)"
+  # Para UPDATE, las credenciales del registry se ponen con 'registry set'
+  if [[ -n "${ACR_USERNAME:-}" && -n "${ACR_PASSWORD:-}" ]]; then
+    az containerapp registry set \
+      -g "$RG_APP" -n "$APP" \
+      --server "$ACR_LOGIN" \
+      --username "$ACR_USERNAME" \
+      --password "$ACR_PASSWORD"
+  fi
   az containerapp update \
     -g "$RG_APP" -n "$APP" \
     --image "$IMAGE_URI" \
-    --set-env-vars PORT="$PORT" MODEL_PATH="$MODEL_PATH" \
-    $REG_ARGS
+    --set-env-vars PORT="$PORT" MODEL_PATH="$MODEL_PATH"
 else
   echo "🆕 Creando app: $APP (RG: $RG_APP) usando environment '$ENV_NAME'"
   az containerapp create \

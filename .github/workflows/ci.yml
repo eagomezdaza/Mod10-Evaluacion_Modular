@@ -47,15 +47,17 @@ jobs:
           pip install -r requirements.txt
 
       - name: Train model
-        run: |
-          python src/train_breast_cancer.py
+        run: python src/train_breast_cancer.py
 
       - name: Start API (Gunicorn, factory, background)
+        env:
+          PORT: ${{ env.PORT }}
+          MODEL_PATH: ${{ env.MODEL_PATH }}
         run: |
-          gunicorn 'src.app:create_app()' -w 2 -b 127.0.0.1:${{ env.PORT }} > api.log 2>&1 &
+          gunicorn 'src.app:create_app()' -w 2 -b 127.0.0.1:${PORT} > api.log 2>&1 &
           echo $! > app.pid
           for i in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:${{ env.PORT }}/health" >/dev/null 2>&1; then
+            if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
               echo "✅ API healthy en intento $i"
               break
             fi
@@ -94,9 +96,6 @@ jobs:
         if: always()
         run: |
           [ -f app.pid ] && kill "$(cat app.pid)" 2>/dev/null || true
-          sleep 2
-          # Asegurar que el proceso se cerró
-          [ -f app.pid ] && (kill -0 "$(cat app.pid)" 2>/dev/null && kill -9 "$(cat app.pid)" || true) || true
 
   deploy-azure:
     name: Deploy — Azure Container Apps
@@ -104,19 +103,22 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      # Environment EXISTENTE
+      # Environment EXISTENTE (ya creado): NO lo registres ni crees aquí
       RG_ENV: rg-evalmod-aca2
       ENV_NAME: env-evalmod2
       LOCATION: eastus
+
       # App (puede estar en otro RG)
       RG_APP: rg-evalmod
       APP: evalmod-api
+
       # Imagen y config
       IMAGE: em-api
       TAG: ${{ github.sha }}
       PORT: 5000
       MODEL_PATH: src/model/modelo_breast.pkl
-      # Registry (desde secrets)
+
+      # Registry (desde Secrets)
       ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
@@ -139,12 +141,12 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Azure login
+      - name: Azure login (Service Principal)
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Install Container Apps CLI & check providers
+      - name: Install Container Apps CLI & check providers (no register)
         run: |
           az extension add --name containerapp --upgrade
           for NS in Microsoft.App Microsoft.OperationalInsights; do
@@ -162,28 +164,54 @@ jobs:
 
       - name: Build & Push to ACR
         run: |
-          # Derivar nombre de ACR (foo.azurecr.io -> foo) para docker login opcional
-          ACR_NAME="${ACR_LOGIN_SERVER%%.*}"
           echo "$ACR_PASSWORD" | docker login "$ACR_LOGIN_SERVER" -u "$ACR_USERNAME" --password-stdin
           docker build -f docker/Dockerfile -t "${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}" .
           docker push "${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}"
 
-      - name: Diagnóstico: ver script en runner
+      - name: Deploy to Azure Container Apps (reusar ENV existente)
+        shell: bash
         run: |
-          echo "Commit SHA: $GITHUB_SHA"
-          ls -l scripts
-          head -n 40 scripts/deploy_azure.sh | nl -ba
-          bash -n scripts/deploy_azure.sh && echo "Sintaxis OK en runner ✅"
+          set -e
+          ENV_ID="$(az containerapp env show -g "$RG_ENV" -n "$ENV_NAME" --query id -o tsv 2>/dev/null || true)"
+          if [ -z "$ENV_ID" ]; then
+            echo "❌ No existe el environment $ENV_NAME en RG $RG_ENV. Crea/ajusta antes de deploy."
+            exit 1
+          fi
+          IMAGE_URI="${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}"
+          echo "Usando ENV_ID: $ENV_ID"
+          echo "Imagen: $IMAGE_URI"
 
-      - name: Deploy to Azure Container Apps
-        run: bash scripts/deploy_azure.sh
-        env:
-          SKIP_BUILD: "1"  # ya hicimos build/push arriba
+          if az containerapp show -g "$RG_APP" -n "$APP" >/dev/null 2>&1; then
+            echo "🔁 Actualizando app $APP en RG $RG_APP"
+            # setear credenciales de registry para UPDATE
+            az containerapp registry set \
+              -g "$RG_APP" -n "$APP" \
+              --server "$ACR_LOGIN_SERVER" \
+              --username "$ACR_USERNAME" \
+              --password "$ACR_PASSWORD"
+            az containerapp update \
+              -g "$RG_APP" -n "$APP" \
+              --image "$IMAGE_URI" \
+              --set-env-vars PORT="$PORT" MODEL_PATH="$MODEL_PATH"
+          else
+            echo "🆕 Creando app $APP en RG $RG_APP usando ENV_ID"
+            az containerapp create \
+              -g "$RG_APP" -n "$APP" \
+              --environment "$ENV_ID" \
+              --image "$IMAGE_URI" \
+              --target-port "$PORT" \
+              --ingress external \
+              --env-vars PORT="$PORT" MODEL_PATH="$MODEL_PATH" \
+              --registry-server "$ACR_LOGIN_SERVER" \
+              --registry-username "$ACR_USERNAME" \
+              --registry-password "$ACR_PASSWORD"
+          fi
 
       - name: Mostrar URL pública
         run: |
           FQDN=$(az containerapp show -g "${{ env.RG_APP }}" -n "${{ env.APP }}" --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || echo "no-disponible")
           echo "🌐 URL pública: https://${FQDN}"
+
 
 
 

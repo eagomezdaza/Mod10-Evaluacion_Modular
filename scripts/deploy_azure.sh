@@ -1,30 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # deploy_azure.sh — Despliegue a Azure Container Apps (ACA) con ACR (cross-RG)
-# Autor: John Gómez (ajustes por chat)
-# Descripción:
-#   - Reusa un ACA Environment existente (no intenta registrar providers).
-#   - Actualiza la Container App si ya existe en ese environment, sin importar el RG.
-#   - Crea la app sólo si NO existe en ese environment.
-#
-# Vars esperadas (con defaults razonables):
-#   SUBS (opcional)
-#   RG_ENV       = RG del ACA Environment (ej: rg-evalmod-aca2)
-#   ENV_NAME     = nombre del ACA Environment (ej: env-evalmod2)
-#   LOCATION     = región (ej: eastus)
-#   RG_APP       = RG donde quieres/está la app (ej: rg-evalmod)
-#   APP          = nombre de la app (ej: evalmod-api)
-#   IMAGE        = repo de imagen (ej: em-api)
-#   TAG          = tag (ej: $GITHUB_SHA)
-#   PORT         = 5000
-#   MODEL_PATH   = src/model/modelo_breast.pkl
-#   ACR_LOGIN_SERVER (ej: acrevalmod16233.azurecr.io)  <-- recomendado
-#   ACR_USERNAME / ACR_PASSWORD (recomendado, via secrets)
-#   ACR          (opcional, si no pasas LOGIN_SERVER; ej: acrevalmod16233)
-#   SKIP_BUILD   = 1 para omitir build/push (si lo hace el job anterior)
-#   DOCKERFILE   = docker/Dockerfile
 # ============================================================================
-
 set -euo pipefail
 
 # -------- Config esperada desde el workflow (con defaults) --------
@@ -150,3 +127,4 @@ echo "=== Probar /predict (dummy 30 features) ==="
 curl -fsS -X POST "https://$FQDN/predict" \
      -H "Content-Type: application/json" \
      -d '{"features":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}' || true; echo
+

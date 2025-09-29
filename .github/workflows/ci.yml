@@ -22,8 +22,8 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     env:
-      PORT: 5000
-      MODEL_PATH: src/model/modelo_breast.pkl
+      PORT: 5002
+      MODEL_PATH: modelo_breast.pkl
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -109,14 +109,14 @@ jobs:
       LOCATION: eastus
 
       # App (puede estar en otro RG)
-      RG_APP: rg-evalmod
-      APP: evalmod-api
+      RG_APP: rg-evalmod-aca2
+      APP: evalmod-api2
 
       # Imagen y config
       IMAGE: em-api
       TAG: ${{ github.sha }}
-      PORT: 5000
-      MODEL_PATH: src/model/modelo_breast.pkl
+      PORT: 5002
+      MODEL_PATH: modelo_breast.pkl
 
       # Registry (desde Secrets)
       ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}

@@ -172,13 +172,16 @@ jobs:
         shell: bash
         run: |
           set -e
-          ENV_ID="$(az containerapp env show -g "$RG_ENV" -n "$ENV_NAME" --query id -o tsv 2>/dev/null || true)"
-          if [ -z "$ENV_ID" ]; then
-            echo "❌ No existe el environment $ENV_NAME en RG $RG_ENV. Crea/ajusta antes de deploy."
+          # Verificación simplificada del environment
+          echo "Verificando environment: $ENV_NAME en resource group: $RG_ENV"
+          if az containerapp env show -g "$RG_ENV" -n "$ENV_NAME" >/dev/null 2>&1; then
+            echo "✅ Environment $ENV_NAME encontrado"
+          else
+            echo "❌ No existe el environment $ENV_NAME en RG $RG_ENV"
             exit 1
           fi
           IMAGE_URI="${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}"
-          echo "Usando ENV_ID: $ENV_ID"
+
           echo "Imagen: $IMAGE_URI"
 
           if az containerapp show -g "$RG_APP" -n "$APP" >/dev/null 2>&1; then
@@ -194,10 +197,10 @@ jobs:
               --image "$IMAGE_URI" \
               --set-env-vars PORT="$PORT" MODEL_PATH="$MODEL_PATH"
           else
-            echo "🆕 Creando app $APP en RG $RG_APP usando ENV_ID"
+            echo "🆕 Creando app $APP en RG $RG_APP"
             az containerapp create \
               -g "$RG_APP" -n "$APP" \
-              --environment "$ENV_ID" \
+              --environment "$ENV_NAME" \
               --image "$IMAGE_URI" \
               --target-port "$PORT" \
               --ingress external \

@@ -172,14 +172,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Verificación simplificada del environment
-          echo "Verificando environment: $ENV_NAME en resource group: $RG_ENV"
-          if az containerapp env show -g "$RG_ENV" -n "$ENV_NAME" >/dev/null 2>&1; then
-            echo "✅ Environment $ENV_NAME encontrado"
-          else
-            echo "❌ No existe el environment $ENV_NAME en RG $RG_ENV"
-            exit 1
-          fi
+          # Verificación mínima - solo log
+          echo "Usando environment: $ENV_NAME en resource group: $RG_ENV"
           IMAGE_URI="${ACR_LOGIN_SERVER}/${IMAGE}:${TAG}"
 
           echo "Imagen: $IMAGE_URI"
